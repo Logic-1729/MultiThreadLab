@@ -1,7 +1,19 @@
-all: histogram
+all: histogram histo_private histo_lockfree histo_lock1 histo_lock2
 
 histogram: histogram.cpp ppmb_io.a
 	gcc -O3 $^ -o $@ -lm -lrt
+
+histo_private: histo_private.cpp ppmb_io.a
+	gcc -O3 $^ -o $@ -lm -lrt -pthread -std=c++11
+
+histo_lockfree: histo_lockfree.cpp ppmb_io.a
+	gcc -O3 $^ -o $@ -lm -lrt -pthread -std=c++11
+
+histo_lock1: histo_lock1.cpp ppmb_io.a
+	gcc -O3 $^ -o $@ -lm -lrt -pthread -std=c++11
+
+histo_lock2: histo_lock2.cpp ppmb_io.a
+	gcc -O3 $^ -o $@ -lm -lrt -pthread -std=c++11 
 
 ppmb_io.a: ppmb_io.o 
 	ar rs $@ $<
@@ -9,5 +21,4 @@ ppmb_io.a: ppmb_io.o
 .phony: clean
 
 clean:
-	rm -f ppmb_io.a ppmb_io.o histogram
-
+	rm -f ppmb_io.a ppmb_io.o histogram histo_private histo_lockfree histo_lock1 histo_lock2 *.hist
