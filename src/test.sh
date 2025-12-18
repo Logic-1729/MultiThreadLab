@@ -32,6 +32,67 @@ calculate_stats() {
     echo "$mean $std_dev"
 }
 
+# ==============================================
+# Valgrind Memory Leak Detection
+# ==============================================
+echo "=== Running Valgrind Memory Leak Detection ===" > valgrind_report.txt
+echo "Testing with moon-small.ppm and 4 threads" >> valgrind_report.txt
+echo "" >> valgrind_report.txt
+
+# Test histo_private
+echo "--- histo_private ---" >> valgrind_report.txt
+valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
+    --error-exitcode=1 \
+    ./histo_private ../images/moon-small.ppm valgrind_test.hist 4 2>&1 | \
+    grep -E "(ERROR SUMMARY|definitely lost|indirectly lost|possibly lost|still reachable)" >> valgrind_report.txt
+echo "" >> valgrind_report.txt
+
+# Test histo_lockfree
+echo "--- histo_lockfree ---" >> valgrind_report.txt
+valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
+    --error-exitcode=1 \
+    ./histo_lockfree ../images/moon-small.ppm valgrind_test.hist 4 2>&1 | \
+    grep -E "(ERROR SUMMARY|definitely lost|indirectly lost|possibly lost|still reachable)" >> valgrind_report.txt
+echo "" >> valgrind_report.txt
+
+# Test histo_lock1
+echo "--- histo_lock1 (Test-and-Set) ---" >> valgrind_report.txt
+valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
+    --error-exitcode=1 \
+    ./histo_lock1 ../images/moon-small.ppm valgrind_test.hist 4 2>&1 | \
+    grep -E "(ERROR SUMMARY|definitely lost|indirectly lost|possibly lost|still reachable)" >> valgrind_report.txt
+echo "" >> valgrind_report.txt
+
+# Test histo_lock2
+echo "--- histo_lock2 (Ticket Lock) ---" >> valgrind_report.txt
+valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
+    --error-exitcode=1 \
+    ./histo_lock2 ../images/moon-small.ppm valgrind_test. hist 4 2>&1 | \
+    grep -E "(ERROR SUMMARY|definitely lost|indirectly lost|possibly lost|still reachable)" >> valgrind_report.txt
+echo "" >> valgrind_report.txt
+
+echo "Valgrind detection complete. Results saved to valgrind_report.txt"
+echo ""
+
+echo "=== Verifying correctness with diff ===" > verification.txt
+./histogram ../images/moon-small.ppm reference.hist 1
+./histo_private ../images/moon-small.ppm test_private.hist 4
+./histo_lockfree ../images/moon-small.ppm test_lockfree.hist 4
+./histo_lock1 ../images/moon-small.ppm test_lock1.hist 4
+./histo_lock2 ../images/moon-small.ppm test_lock2.hist 4
+
+diff reference.hist test_private.hist && echo "histo_private:  PASS" >> verification.txt || echo "histo_private:  FAIL" >> verification.txt
+diff reference.hist test_lockfree.hist && echo "histo_lockfree: PASS" >> verification.txt || echo "histo_lockfree: FAIL" >> verification.txt
+diff reference.hist test_lock1.hist && echo "histo_lock1: PASS" >> verification.txt || echo "histo_lock1: FAIL" >> verification.txt
+diff reference.hist test_lock2.hist && echo "histo_lock2: PASS" >> verification.txt || echo "histo_lock2: FAIL" >> verification.txt
+
+echo "Benchmark complete.  Results saved to:"
+echo "  - histo_private.txt"
+echo "  - histo_lockfree.txt"
+echo "  - histo_lock1.txt"
+echo "  - histo_lock2.txt"
+echo "  - verification.txt"
+
 echo "=== Testing histo_private ===" > histo_private.txt
 for img in $IMAGES; do
     echo "Image: $img" >> histo_private.txt
@@ -163,22 +224,3 @@ for img in $IMAGES; do
         echo "" >> histo_lock2.txt
     done
 done
-
-echo "=== Verifying correctness with diff ===" > verification. txt
-./histogram ../images/moon-small. ppm reference.hist 1
-./histo_private ../images/moon-small.ppm test_private.hist 4
-./histo_lockfree ../images/moon-small.ppm test_lockfree.hist 4
-./histo_lock1 ../images/moon-small.ppm test_lock1.hist 4
-./histo_lock2 ../images/moon-small.ppm test_lock2.hist 4
-
-diff reference.hist test_private.hist && echo "histo_private:  PASS" >> verification.txt || echo "histo_private:  FAIL" >> verification.txt
-diff reference.hist test_lockfree.hist && echo "histo_lockfree: PASS" >> verification.txt || echo "histo_lockfree: FAIL" >> verification.txt
-diff reference. hist test_lock1.hist && echo "histo_lock1: PASS" >> verification.txt || echo "histo_lock1: FAIL" >> verification.txt
-diff reference.hist test_lock2.hist && echo "histo_lock2: PASS" >> verification.txt || echo "histo_lock2: FAIL" >> verification.txt
-
-echo "Benchmark complete.  Results saved to:"
-echo "  - histo_private.txt"
-echo "  - histo_lockfree.txt"
-echo "  - histo_lock1.txt"
-echo "  - histo_lock2.txt"
-echo "  - verification.txt"
