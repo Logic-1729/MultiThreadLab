@@ -1,6 +1,8 @@
+#!/bin/bash
+
 IMAGES="300px-Unequalized_Hawkes_Bay_NZ.ppm earth.ppm flood.ppm moon-small.ppm moon-large.ppm phobos.ppm university.ppm"
 THREADS="1 2 4 8"
-ITERATIONS=10
+ITERATIONS=100
 
 calculate_stats() {
     local sum=0
@@ -29,7 +31,6 @@ for img in $IMAGES; do
             output=$(./histo_private ../images/$img output_private.hist $t 2>&1)
             time_ns=$(echo "$output" | grep "Time:" | awk '{print $2}')
             times+=($time_ns)
-            # echo "  Run $i: $time_ns ns"
         done
         
         stats=($(calculate_stats "${times[@]}"))
@@ -53,7 +54,6 @@ for img in $IMAGES; do
             output=$(./histo_lockfree ../images/$img output_lockfree.hist $t 2>&1)
             time_ns=$(echo "$output" | grep "Time:" | awk '{print $2}')
             times+=($time_ns)
-            # echo "  Run $i: $time_ns ns"
         done
         
         stats=($(calculate_stats "${times[@]}"))
@@ -77,7 +77,6 @@ for img in $IMAGES; do
             output=$(./histo_lock1 ../images/$img output_lock1.hist $t 2>&1)
             time_ns=$(echo "$output" | grep "Time:" | awk '{print $2}')
             times+=($time_ns)
-            # echo "  Run $i:  $time_ns ns"
         done
         
         stats=($(calculate_stats "${times[@]}"))
@@ -85,7 +84,7 @@ for img in $IMAGES; do
         std_dev=${stats[1]}
         
         echo "  Average: $mean ns"
-        echo "  Std Dev:  $std_dev ns"
+        echo "  Std Dev: $std_dev ns"
         echo ""
     done
 done
@@ -101,7 +100,6 @@ for img in $IMAGES; do
             output=$(./histo_lock2 ../images/$img output_lock2.hist $t 2>&1)
             time_ns=$(echo "$output" | grep "Time:" | awk '{print $2}')
             times+=($time_ns)
-            # echo "  Run $i: $time_ns ns"
         done
         
         stats=($(calculate_stats "${times[@]}"))
@@ -116,13 +114,13 @@ done
 
 echo ""
 echo "=== Verifying correctness with diff ==="
-./histogram ../images/moon-small.ppm reference. hist 1
-./histo_private ../images/moon-small. ppm test_private.hist 4
-./histo_lockfree ../images/moon-small. ppm test_lockfree. hist 4
-./histo_lock1 ../images/moon-small.ppm test_lock1.hist 4
+./histogram ../images/moon-small. ppm reference. hist 1
+./histo_private ../images/moon-small.ppm test_private.hist 4
+./histo_lockfree ../images/moon-small.ppm test_lockfree.hist 4
+./histo_lock1 ../images/moon-small. ppm test_lock1.hist 4
 ./histo_lock2 ../images/moon-small.ppm test_lock2.hist 4
 
-diff reference.hist test_private.hist && echo "histo_private:   PASS" || echo "histo_private: FAIL"
+diff reference.hist test_private.hist && echo "histo_private:    PASS" || echo "histo_private: FAIL"
 diff reference.hist test_lockfree.hist && echo "histo_lockfree: PASS" || echo "histo_lockfree: FAIL"
 diff reference.hist test_lock1.hist && echo "histo_lock1: PASS" || echo "histo_lock1: FAIL"
 diff reference.hist test_lock2.hist && echo "histo_lock2: PASS" || echo "histo_lock2: FAIL"
