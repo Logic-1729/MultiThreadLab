@@ -26,19 +26,11 @@ void print_histogram(FILE *f, int *hist, int N) {
   }
 }
 
-// 优化1: 缓存行对齐的原子类型
-struct alignas(64) AlignedAtomic {
-  std::atomic<int> value;
-  char padding[60];  // 填充到 64 字节
-  
-  AlignedAtomic() : value(0) {}
-};
-
 struct index {
   struct img *input;
-  AlignedAtomic *hist_r;
-  AlignedAtomic *hist_g;
-  AlignedAtomic *hist_b;
+  std:: atomic<int> *hist_r;
+  std::atomic<int> *hist_g;
+  std::atomic<int> *hist_b;
   int start;
   int end;
 };
@@ -46,43 +38,24 @@ struct index {
 void* lockfree_histogram(void * thread) {
   struct index *idx = (struct index *) thread;
   struct img *input = idx->input;
-  AlignedAtomic *hist_r = idx->hist_r;
-  AlignedAtomic *hist_g = idx->hist_g;
-  AlignedAtomic *hist_b = idx->hist_b;
+  std::atomic<int> *hist_r = idx->hist_r;
+  std::atomic<int> *hist_g = idx->hist_g;
+  std::atomic<int> *hist_b = idx->hist_b;
   int start = idx->start;
   int end = idx->end;
 
-  // 优化2: 批量处理 - 本地累积
-  int local_hist_r[256] = {0};
-  int local_hist_g[256] = {0};
-  int local_hist_b[256] = {0};
-
-  // 第一阶段：本地累积（无原子操作）
   for(int pix = start; pix < end; pix++) {
-    local_hist_r[input->r[pix]]++;
-    local_hist_g[input->g[pix]]++;
-    local_hist_b[input->b[pix]]++;
+    hist_r[input->r[pix]].fetch_add(1, std::memory_order_relaxed);
+    hist_g[input->g[pix]].fetch_add(1, std::memory_order_relaxed);
+    hist_b[input->b[pix]].fetch_add(1, std::memory_order_relaxed);
   }
-
-  // 第二阶段：批量更新全局直方图（减少原子操作次数）
-  for(int i = 0; i < 256; i++) {
-    if(local_hist_r[i] > 0) {
-      hist_r[i].value.fetch_add(local_hist_r[i], std::memory_order_relaxed);
-    }
-    if(local_hist_g[i] > 0) {
-      hist_g[i].value.fetch_add(local_hist_g[i], std::memory_order_relaxed);
-    }
-    if(local_hist_b[i] > 0) {
-      hist_b[i].value.fetch_add(local_hist_b[i], std::memory_order_relaxed);
-    }
-  }
-
   return NULL;
 }
 
 int main(int argc, char *argv[]) {
   if(argc != 4) {
     printf("Usage: %s input-file output-file threads\n", argv[0]);
+    printf("       For single-threaded runs, pass threads = 1\n");
     exit(1);
   }
   
@@ -92,8 +65,8 @@ int main(int argc, char *argv[]) {
 
   struct img input;
 
-  if(!ppmb_read(input_file, &input.xsize, &input.ysize, &input.maxrgb, 
-		&input.r, &input.g, &input.b)) {
+  if(! ppmb_read(input_file, &input.xsize, &input.ysize, &input.maxrgb, 
+		&input.r, &input. g, &input.b)) {
     if(input.maxrgb > 255) {
       printf("Maxrgb %d not supported\n", input.maxrgb);
       exit(1);
@@ -109,10 +82,19 @@ int main(int argc, char *argv[]) {
 
     t.start();
 
-    // 优化3: 使用 new[] 正确构造原子对象
-    AlignedAtomic *atomic_hist_r = new AlignedAtomic[256];
-    AlignedAtomic *atomic_hist_g = new AlignedAtomic[256];
-    AlignedAtomic *atomic_hist_b = new AlignedAtomic[256];
+    void *raw_r = calloc(input.maxrgb+1, sizeof(std::atomic<int>));
+    void *raw_g = calloc(input.maxrgb+1, sizeof(std::atomic<int>));
+    void *raw_b = calloc(input.maxrgb+1, sizeof(std::atomic<int>));
+    
+    std::atomic<int> *atomic_hist_r = static_cast<std::atomic<int>*>(raw_r);
+    std::atomic<int> *atomic_hist_g = static_cast<std::atomic<int>*>(raw_g);
+    std::atomic<int> *atomic_hist_b = static_cast<std::atomic<int>*>(raw_b);
+    
+    for(int i = 0; i <= input.maxrgb; i++) {
+      new (&atomic_hist_r[i]) std::atomic<int>(0);
+      new (&atomic_hist_g[i]) std::atomic<int>(0);
+      new (&atomic_hist_b[i]) std::atomic<int>(0);
+    }
 
     pthread_t thread_ids[threads];
     struct index *idx = (struct index *) malloc(sizeof(struct index) * threads);
@@ -120,11 +102,11 @@ int main(int argc, char *argv[]) {
 
     for (int i = 0; i < threads; i++) {
       idx[i].input = &input;
-      idx[i].hist_r = atomic_hist_r;
-      idx[i].hist_g = atomic_hist_g;
-      idx[i].hist_b = atomic_hist_b;
-      idx[i].start = N*i/threads;
-      idx[i].end = N*(i+1)/threads;
+      idx[i]. hist_r = atomic_hist_r;
+      idx[i]. hist_g = atomic_hist_g;
+      idx[i]. hist_b = atomic_hist_b;
+      idx[i]. start = N*i/threads;
+      idx[i]. end = N*(i+1)/threads;
       pthread_create(&thread_ids[i], NULL, lockfree_histogram, (void *) (idx+i));
     }
     
@@ -132,11 +114,10 @@ int main(int argc, char *argv[]) {
       pthread_join(thread_ids[i], NULL);
     }
 
-    // 读取结果
-    for(int i = 0; i < 256; i++) {
-      hist_r[i] = atomic_hist_r[i].value.load(std::memory_order_relaxed);
-      hist_g[i] = atomic_hist_g[i].value.load(std::memory_order_relaxed);
-      hist_b[i] = atomic_hist_b[i].value.load(std::memory_order_relaxed);
+    for(int i = 0; i <= input.maxrgb; i++) {
+        hist_r[i] = atomic_hist_r[i]. load(std::memory_order_relaxed);
+        hist_g[i] = atomic_hist_g[i].load(std:: memory_order_relaxed);
+        hist_b[i] = atomic_hist_b[i]. load(std::memory_order_relaxed);
     }
 
     t.stop();
@@ -144,7 +125,7 @@ int main(int argc, char *argv[]) {
     FILE *out = fopen(output_file, "w");
     if(out) {
       print_histogram(out, hist_r, input.maxrgb);
-      print_histogram(out, hist_g, input. maxrgb);
+      print_histogram(out, hist_g, input.maxrgb);
       print_histogram(out, hist_b, input.maxrgb);
       fclose(out);
     } else {
@@ -153,14 +134,22 @@ int main(int argc, char *argv[]) {
     
     printf("Time: %llu ns\n", t.duration());
     
-    // 清理内存
-    delete[] atomic_hist_r;
-    delete[] atomic_hist_g;
-    delete[] atomic_hist_b;
+    for(int i = 0; i <= input.maxrgb; i++) {
+      atomic_hist_r[i].~atomic();
+      atomic_hist_g[i].~atomic();
+      atomic_hist_b[i].~atomic();
+    }
+    
+    free(raw_r);
+    free(raw_g);
+    free(raw_b);
     free(hist_r);
     free(hist_g);
     free(hist_b);
     free(idx);
+    free(input.r);
+    free(input.g);
+    free(input.b);
   }
   
   return 0;

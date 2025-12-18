@@ -27,8 +27,8 @@ void print_histogram(FILE *f, int *hist, int N) {
 }
 
 class alignas(64) Spinlock { 
-  std::atomic_flag flag = ATOMIC_FLAG_INIT;
-public:
+  std:: atomic_flag flag = ATOMIC_FLAG_INIT;
+public: 
   void lock() {
     while(flag.test_and_set(std::memory_order_acquire)) {
       #if defined(__x86_64__) || defined(__i386__)
@@ -43,7 +43,6 @@ public:
   }
 };
 
-// 优化2：缓存行对齐的锁数组
 alignas(64) Spinlock r_lock[256];
 alignas(64) Spinlock g_lock[256];
 alignas(64) Spinlock b_lock[256];
@@ -66,20 +65,16 @@ void* lock_histogram(void *thread) {
   int start = idx->start;
   int end = idx->end;
 
-  // 优化1：使用局部直方图进行批量处理
   int local_hist_r[256] = {0};
   int local_hist_g[256] = {0};
   int local_hist_b[256] = {0};
 
-  // 第一阶段：在本地直方图中累积（无锁操作）
   for(int pix = start; pix < end; pix++) {
     local_hist_r[input->r[pix]]++;
     local_hist_g[input->g[pix]]++;
     local_hist_b[input->b[pix]]++;
   }
 
-  // 第二阶段：批量更新全局直方图（减少锁操作次数）
-  // 处理红色通道
   for(int i = 0; i < 256; i++) {
     if(local_hist_r[i] > 0) {
       r_lock[i]. lock();
@@ -88,7 +83,6 @@ void* lock_histogram(void *thread) {
     }
   }
 
-  // 处理绿色通道
   for(int i = 0; i < 256; i++) {
     if(local_hist_g[i] > 0) {
       g_lock[i].lock();
@@ -97,7 +91,6 @@ void* lock_histogram(void *thread) {
     }
   }
 
-  // 处理蓝色通道
   for(int i = 0; i < 256; i++) {
     if(local_hist_b[i] > 0) {
       b_lock[i].lock();
@@ -122,7 +115,7 @@ int main(int argc, char *argv[]) {
   struct img input;
 
   if(!ppmb_read(input_file, &input. xsize, &input.ysize, &input.maxrgb, 
-		&input.r, &input.g, &input.b)) {
+		&input.r, &input.g, &input. b)) {
     if(input.maxrgb > 255) {
       printf("Maxrgb %d not supported\n", input. maxrgb);
       exit(1);
@@ -134,7 +127,7 @@ int main(int argc, char *argv[]) {
     hist_g = (int *) calloc(input.maxrgb+1, sizeof(int));
     hist_b = (int *) calloc(input.maxrgb+1, sizeof(int));
 
-    ggc:: Timer t("histogram");
+    ggc::Timer t("histogram");
 
     t.start();
     pthread_t thread_ids[threads];
@@ -166,12 +159,16 @@ int main(int argc, char *argv[]) {
     } else {
       fprintf(stderr, "Unable to output!\n");
     }
+    
     printf("Time: %llu ns\n", t.duration());
     
     free(hist_r);
     free(hist_g);
     free(hist_b);
     free(idx);
+    free(input.r);
+    free(input.g);
+    free(input.b);
   }
   
   return 0;

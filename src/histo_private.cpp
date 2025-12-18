@@ -25,17 +25,11 @@ void print_histogram(FILE *f, int *hist, int N) {
   }
 }
 
-// 优化1: 缓存行对齐的直方图结构
-struct alignas(64) AlignedHistogram {
-  int r[256];
-  int g[256];
-  int b[256];
-  char padding[64];  // 确保不同线程的结构在不同缓存行
-};
-
 struct index {
   struct img *input;
-  AlignedHistogram *private_hist;
+  int *hist_r;
+  int *hist_g;
+  int *hist_b;
   int start;
   int end;
 };
@@ -43,44 +37,16 @@ struct index {
 void* private_histogram(void *thread) {
   struct index *idx = (struct index *) thread;
   struct img *input = idx->input;
-  int *hist_r = idx->private_hist->r;
-  int *hist_g = idx->private_hist->g;
-  int *hist_b = idx->private_hist->b;
+  int *hist_r = idx->hist_r;
+  int *hist_g = idx->hist_g;
+  int *hist_b = idx->hist_b;
   int start = idx->start;
   int end = idx->end;
 
   for(int pix = start; pix < end; pix++) {
-    hist_r[input->r[pix]]++;
-    hist_g[input->g[pix]]++;
-    hist_b[input->b[pix]]++;
-  }
-  return NULL;
-}
-
-// 优化2: 并行合并
-struct merge_index {
-  AlignedHistogram *private_hists;
-  int *hist_r;
-  int *hist_g;
-  int *hist_b;
-  int num_threads;
-  int start_bucket;
-  int end_bucket;
-};
-
-void* parallel_merge(void *arg) {
-  struct merge_index *midx = (struct merge_index *) arg;
-  
-  for(int j = midx->start_bucket; j < midx->end_bucket; j++) {
-    int sum_r = 0, sum_g = 0, sum_b = 0;
-    for(int i = 0; i < midx->num_threads; i++) {
-      sum_r += midx->private_hists[i].r[j];
-      sum_g += midx->private_hists[i].g[j];
-      sum_b += midx->private_hists[i].b[j];
-    }
-    midx->hist_r[j] = sum_r;
-    midx->hist_g[j] = sum_g;
-    midx->hist_b[j] = sum_b;
+    hist_r[input->r[pix]] += 1;
+    hist_g[input->g[pix]] += 1;
+    hist_b[input->b[pix]] += 1;
   }
   return NULL;
 }
@@ -88,6 +54,7 @@ void* parallel_merge(void *arg) {
 int main(int argc, char *argv[]) {
   if(argc != 4) {
     printf("Usage: %s input-file output-file threads\n", argv[0]);
+    printf("       For single-threaded runs, pass threads = 1\n");
     exit(1);
   }
   
@@ -113,17 +80,24 @@ int main(int argc, char *argv[]) {
     ggc::Timer t("histogram");
     t.start();
 
-    // 优化1: 使用对齐的结构体数组
-    AlignedHistogram *private_hists = new AlignedHistogram[threads]();
+    int **private_hist_r = (int **) malloc(threads * sizeof(int *));
+    int **private_hist_g = (int **) malloc(threads * sizeof(int *));
+    int **private_hist_b = (int **) malloc(threads * sizeof(int *));
+    for(int i = 0; i < threads; i++) {
+      private_hist_r[i] = (int *) calloc(input.maxrgb+1, sizeof(int));
+      private_hist_g[i] = (int *) calloc(input.maxrgb+1, sizeof(int));
+      private_hist_b[i] = (int *) calloc(input.maxrgb+1, sizeof(int));
+    }
 
     pthread_t thread_ids[threads];
     struct index *idx = (struct index *) malloc(sizeof(struct index) * threads);
     int N = input.xsize * input.ysize;
 
-    // 计算阶段
     for (int i = 0; i < threads; i++) {
       idx[i].input = &input;
-      idx[i].private_hist = &private_hists[i];
+      idx[i].hist_r = private_hist_r[i];
+      idx[i].hist_g = private_hist_g[i];
+      idx[i].hist_b = private_hist_b[i];
       idx[i].start = N*i/threads;
       idx[i].end = N*(i+1)/threads;
       pthread_create(&thread_ids[i], NULL, private_histogram, (void *) (idx+i));
@@ -132,48 +106,22 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i < threads; i++) {
       pthread_join(thread_ids[i], NULL);
     }
-
-    // 优化2: 并行合并（仅当线程数较多时）
-    if(threads >= 4) {
-      int merge_threads = (threads > 4) ? 4 : threads;
-      pthread_t merge_ids[merge_threads];
-      struct merge_index *midx = (struct merge_index *) 
-        malloc(sizeof(struct merge_index) * merge_threads);
-      
-      int buckets_per_thread = 256 / merge_threads;
-      for(int i = 0; i < merge_threads; i++) {
-        midx[i].private_hists = private_hists;
-        midx[i].hist_r = hist_r;
-        midx[i].hist_g = hist_g;
-        midx[i].hist_b = hist_b;
-        midx[i]. num_threads = threads;
-        midx[i]. start_bucket = i * buckets_per_thread;
-        midx[i].end_bucket = (i == merge_threads - 1) ? 256 : (i + 1) * buckets_per_thread;
-        pthread_create(&merge_ids[i], NULL, parallel_merge, (void *) &midx[i]);
-      }
-      
-      for(int i = 0; i < merge_threads; i++) {
-        pthread_join(merge_ids[i], NULL);
-      }
-      free(midx);
-    } else {
-      // 串行合并（线程少时更快）
-      for (int i = 0; i < threads; i++) {
-        for (int j = 0; j <= input.maxrgb; j++) {
-          hist_r[j] += private_hists[i]. r[j];
-          hist_g[j] += private_hists[i].g[j];
-          hist_b[j] += private_hists[i]. b[j];
-        }
+    
+    for (int i = 0; i < threads; i++) {
+      for (int j = 0; j <= input.maxrgb; j++) {
+        hist_r[j] += private_hist_r[i][j];
+        hist_g[j] += private_hist_g[i][j];
+        hist_b[j] += private_hist_b[i][j];
       }
     }
-
+    
     t.stop();
 
     FILE *out = fopen(output_file, "w");
     if(out) {
       print_histogram(out, hist_r, input.maxrgb);
       print_histogram(out, hist_g, input.maxrgb);
-      print_histogram(out, hist_b, input.maxrgb);
+      print_histogram(out, hist_b, input. maxrgb);
       fclose(out);
     } else {
       fprintf(stderr, "Unable to output!\n");
@@ -181,12 +129,21 @@ int main(int argc, char *argv[]) {
     
     printf("Time: %llu ns\n", t.duration());
     
-    // 优化3: 正确释放内存
-    delete[] private_hists;
-    free(hist_r);
-    free(hist_g);
+    for(int i = 0; i < threads; i++) {
+      free(private_hist_r[i]);
+      free(private_hist_g[i]); 
+      free(private_hist_b[i]);
+    }
+    free(private_hist_r);
+    free(private_hist_g);
+    free(private_hist_b);
+    free(hist_r); 
+    free(hist_g); 
     free(hist_b);
-    free(idx);
+    free(idx); 
+    free(input.r);  
+    free(input.g);  
+    free(input.b); 
   }
   
   return 0;
